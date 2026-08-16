@@ -41,7 +41,7 @@ class CodeActionReceiver : BroadcastReceiver() {
 
             FileOutputStream(targetFile).use { it.write(content.toByteArray()) }
             WorkspaceSession.addFile(targetFile.absolutePath.substringAfter("DeepSeekWorkspace/"))
-            Toast.makeText(context, "Saved $filename", Toast.Toast.LENGTH_SHORT).show()
+            Toast.makeText(context, "Saved $filename", Toast.LENGTH_SHORT).show()
         } catch (e: Exception) { e.printStackTrace() }
     }
 }
