@@ -32,7 +32,9 @@ object ProjectScaffolder {
                     }
                 }
             }
-            WorkspaceSession.addFile("Scaffolded ${nodes.firstOrNull()?.relativePath?.substringBefore("/") ?: "Project"}")
+            val rootName = nodes.firstOrNull()?.relativePath?.substringBefore("/") ?: "Project"
+            WorkspaceSession.addFile("📁 Scaffolded $rootName")
+            Toast.makeText(context, "Scaffolded $rootName", Toast.LENGTH_SHORT).show()
         } catch (e: Exception) { e.printStackTrace() }
     }
 }

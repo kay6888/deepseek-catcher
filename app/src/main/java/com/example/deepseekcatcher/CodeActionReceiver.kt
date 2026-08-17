@@ -40,7 +40,8 @@ class CodeActionReceiver : BroadcastReceiver() {
             val targetFile = existingNestedFile ?: File(workspaceDir, filename)
 
             FileOutputStream(targetFile).use { it.write(content.toByteArray()) }
-            WorkspaceSession.addFile(targetFile.absolutePath.substringAfter("DeepSeekWorkspace/"))
+            val path = targetFile.absolutePath.substringAfter("DeepSeekWorkspace/")
+            WorkspaceSession.addFile("📄 $path")
             Toast.makeText(context, "Saved $filename", Toast.LENGTH_SHORT).show()
         } catch (e: Exception) { e.printStackTrace() }
     }
