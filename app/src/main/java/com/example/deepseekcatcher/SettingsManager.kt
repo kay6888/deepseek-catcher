@@ -21,4 +21,8 @@ class SettingsManager(context: Context) {
     var notificationsEnabled: Boolean
         get() = prefs.getBoolean("notifications_enabled", true)
         set(value) = prefs.edit().putBoolean("notifications_enabled", value).apply()
+
+    var floatingButtonEnabled: Boolean
+        get() = prefs.getBoolean("floating_button_enabled", false)
+        set(value) = prefs.edit().putBoolean("floating_button_enabled", value).apply()
 }
