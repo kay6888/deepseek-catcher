@@ -1,3 +1,10 @@
+#!/bin/bash
+
+PKG_DIR="app/src/main/java/com/example/deepseekcatcher"
+
+echo "Applying Bioluminescent UI Overhaul..."
+
+cat << 'EOF' > "$PKG_DIR/MainActivity.kt"
 package com.example.deepseekcatcher
 
 import android.content.Intent
@@ -259,3 +266,6 @@ fun SettingsCard(title: String, subtitle: String, isChecked: Boolean, onCheckedC
         }
     }
 }
+EOF
+
+echo "UI Override Complete!"
