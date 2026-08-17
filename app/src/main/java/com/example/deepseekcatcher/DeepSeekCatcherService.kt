@@ -13,72 +13,99 @@ import androidx.core.app.NotificationCompat
 class DeepSeekCatcherService : AccessibilityService() {
     private val processedContent = mutableSetOf<Int>()
     private lateinit var settings: SettingsManager
-    private var lastDetectedFilename = ""
+    private var lastDetectedFilename = "snippet.txt"
+    private var lastDetectedCode = ""
 
     override fun onServiceConnected() { settings = SettingsManager(this) }
 
     override fun onAccessibilityEvent(event: AccessibilityEvent?) {
         if (event == null) return
 
-        // COPY-COLLECT LOGIC: Detect if the user clicked a "Copy" button
-        if (event.eventType == AccessibilityEvent.TYPE_VIEW_CLICKED) {
+        // COPY-COLLECT: Detect "Copied" Toasts or "Copy" button clicks
+        if (event.eventType == AccessibilityEvent.TYPE_NOTIFICATION_STATE_CHANGED || event.eventType == AccessibilityEvent.TYPE_VIEW_CLICKED) {
+            val eventText = event.text.joinToString(" ").lowercase()
             val nodeText = event.source?.text?.toString()?.lowercase() ?: event.source?.contentDescription?.toString()?.lowercase() ?: ""
-            if ((nodeText.contains("copy") || nodeText.contains("copied")) && settings.copyCollect) {
-                if (lastDetectedFilename.isNotEmpty()) {
-                    val intent = Intent(this, CodeActionReceiver::class.java).apply {
-                        action = "ACTION_COLLECT"
-                        putExtra("FILENAME", lastDetectedFilename)
-                    }
-                    sendBroadcast(intent)
-                    if (settings.notificationsEnabled) {
-                        showToastNotification(lastDetectedFilename, "Saved via Copy-Collect!")
-                    }
+            
+            if (eventText.contains("copied") || eventText.contains("copy") || nodeText.contains("copy")) {
+                if (settings.copyCollect && lastDetectedCode.isNotEmpty()) {
+                    triggerCollection(lastDetectedFilename, lastDetectedCode, isAuto = false, isCopy = true)
                 }
             }
         }
 
+        // DEEP SCAN: Only process window content changes
         val rootNode = rootInActiveWindow ?: return
-        scanNodes(rootNode)
-    }
+        val allTextNodes = mutableListOf<String>()
+        extractAllText(rootNode, allTextNodes)
 
-    private fun scanNodes(node: AccessibilityNodeInfo?) {
-        if (node == null) return
-        if (node.text != null) {
-            val text = node.text.toString()
+        // PASS 1: Project Structures MUST be processed FIRST
+        for (text in allTextNodes) {
             val textHash = text.hashCode()
+            if (!processedContent.contains(textHash) && (text.contains("├──") || text.contains("└──"))) {
+                processedContent.add(textHash)
+                handleCapture("project", "Project Scaffold", text)
+            }
+        }
 
+        // PASS 2: Code snippets
+        for (text in allTextNodes) {
+            val textHash = text.hashCode()
             if (!processedContent.contains(textHash)) {
-                if (text.contains("├──") || text.contains("└──")) {
-                    processedContent.add(textHash)
-                    handleCapture("project", "Scaffold", text)
-                } else if ((text.contains("fun ") && text.contains("val ")) || (text.contains("class ") && text.contains("{")) || text.startsWith("import ") || (text.contains("const ") && text.contains("="))) {
+                if ((text.contains("fun ") && text.contains("{")) || 
+                    (text.contains("class ") && text.contains("{")) || 
+                    text.startsWith("import ") || 
+                    text.contains("```") ||
+                    (text.contains("const ") && text.contains("="))) {
+                    
                     processedContent.add(textHash)
                     var filename = "snippet_${System.currentTimeMillis()}.txt"
                     val match = Regex("(?:file|name)[\\s:]*([a-zA-Z0-9_\\-\\.\\/]+)", RegexOption.IGNORE_CASE).find(text.lines().firstOrNull() ?: "")
                     if (match != null) filename = match.groupValues[1]
                     
-                    lastDetectedFilename = filename // Store for Copy-Collect feature
+                    lastDetectedFilename = filename
+                    lastDetectedCode = text
                     handleCapture("code", filename, text)
                 }
             }
         }
-        for (i in 0 until node.childCount) scanNodes(node.getChild(i))
+    }
+
+    private fun extractAllText(node: AccessibilityNodeInfo?, output: MutableList<String>) {
+        if (node == null) return
+        // Some apps hide text in content descriptions, we must check both
+        val t = node.text?.toString()
+        val c = node.contentDescription?.toString()
+        
+        if (!t.isNullOrBlank()) output.add(t)
+        else if (!c.isNullOrBlank()) output.add(c)
+        
+        for (i in 0 until node.childCount) extractAllText(node.getChild(i), output)
     }
 
     private fun handleCapture(type: String, name: String, content: String) {
+        if (type == "code") CodeCache.pendingSaves[name] = content
+        
+        if (settings.autoCollect) {
+            triggerCollection(name, content, isAuto = true, isCopy = false, type = type)
+        } else if (settings.notificationsEnabled) {
+            triggerInteractiveNotification(if (type == "project") "ACTION_SCAFFOLD_PROJECT" else "ACTION_COLLECT", 
+                if (type == "project") "TREE_CONTENT" else "FILENAME", name)
+        }
+    }
+
+    private fun triggerCollection(name: String, content: String, isAuto: Boolean, isCopy: Boolean, type: String = "code") {
         val actionType = if (type == "project") "ACTION_SCAFFOLD_PROJECT" else "ACTION_COLLECT"
         val extraKey = if (type == "project") "TREE_CONTENT" else "FILENAME"
-        if (type == "code") CodeCache.pendingSaves[name] = content
-
-        if (settings.autoCollect) {
-            val intent = Intent(this, CodeActionReceiver::class.java).apply {
-                action = actionType
-                putExtra(extraKey, name)
-            }
-            sendBroadcast(intent)
-            if (settings.notificationsEnabled) showToastNotification(name, "Auto-Collected")
-        } else if (settings.notificationsEnabled) {
-            triggerInteractiveNotification(actionType, extraKey, name)
+        
+        val intent = Intent(this, CodeActionReceiver::class.java).apply {
+            action = actionType
+            putExtra(extraKey, if (type == "project") content else name) // Pass actual tree content for scaffold
+        }
+        sendBroadcast(intent)
+        
+        if (settings.notificationsEnabled) {
+            val source = if (isCopy) "via Copy-Collect" else "Auto-Collected"
+            showToastNotification(name, source)
         }
     }
 
