@@ -1,3 +1,203 @@
+#!/bin/bash
+
+PKG_DIR="app/src/main/java/com/example/deepseekcatcher"
+RES_XML="app/src/main/res/xml"
+
+echo "Deploying DeepSeek App Locator and Advanced Penetration Scanner..."
+
+# 1. Update Manifest with QUERY_ALL_PACKAGES permission
+cat << 'EOF' > app/src/main/AndroidManifest.xml
+<?xml version="1.0" encoding="utf-8"?>
+<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:tools="http://schemas.android.com/tools">
+
+    <uses-permission android:name="android.permission.INTERNET" />
+    <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+    <uses-permission android:name="android.permission.WRITE_EXTERNAL_STORAGE" android:maxSdkVersion="28" />
+    <!-- REQUIRED TO SEE DEEPSEEK ON ANDROID 11+ -->
+    <uses-permission android:name="android.permission.QUERY_ALL_PACKAGES" tools:ignore="QueryAllPackagesPermission" />
+
+    <application
+        android:allowBackup="true"
+        android:icon="@drawable/ic_whale_net"
+        android:label="@string/app_name"
+        android:theme="@android:style/Theme.Material.Light.NoActionBar">
+        
+        <activity android:name=".MainActivity" android:exported="true">
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+        </activity>
+
+        <service android:name=".DeepSeekCatcherService" android:exported="false" android:permission="android.permission.BIND_ACCESSIBILITY_SERVICE">
+            <intent-filter><action android:name="android.accessibilityservice.AccessibilityService" /></intent-filter>
+            <meta-data android:name="android.accessibilityservice" android:resource="@xml/accessibility_service_config" />
+        </service>
+
+        <receiver android:name=".CodeActionReceiver" android:exported="false">
+            <intent-filter>
+                <action android:name="ACTION_COLLECT" />
+                <action android:name="ACTION_SCAFFOLD_PROJECT" />
+            </intent-filter>
+        </receiver>
+    </application>
+</manifest>
+EOF
+
+# 2. Update Accessibility Config to force deep UI tree retrieval
+cat << 'EOF' > "$RES_XML/accessibility_service_config.xml"
+<?xml version="1.0" encoding="utf-8"?>
+<accessibility-service xmlns:android="http://schemas.android.com/apk/res/android"
+    android:accessibilityEventTypes="typeWindowContentChanged|typeWindowStateChanged|typeViewClicked|typeNotificationStateChanged"
+    android:accessibilityFeedbackType="feedbackGeneric"
+    android:accessibilityFlags="flagDefault|flagRetrieveInteractiveWindows|flagIncludeNotImportantViews|flagRequestEnhancedWebAccessibility"
+    android:canRetrieveWindowContent="true"
+    android:description="@string/accessibility_description"
+    android:notificationTimeout="200" />
+EOF
+
+# 3. Enhance Scanner to pull text from Flutter/React Native/WebViews
+cat << 'EOF' > "$PKG_DIR/DeepSeekCatcherService.kt"
+package com.example.deepseekcatcher
+
+import android.accessibilityservice.AccessibilityService
+import android.app.NotificationChannel
+import android.app.NotificationManager
+import android.app.PendingIntent
+import android.content.Context
+import android.content.Intent
+import android.view.accessibility.AccessibilityEvent
+import android.view.accessibility.AccessibilityNodeInfo
+import androidx.core.app.NotificationCompat
+
+class DeepSeekCatcherService : AccessibilityService() {
+    private val processedContent = mutableSetOf<Int>()
+    private lateinit var settings: SettingsManager
+    private var lastDetectedFilename = "snippet.txt"
+    private var lastDetectedCode = ""
+
+    override fun onServiceConnected() { settings = SettingsManager(this) }
+
+    override fun onAccessibilityEvent(event: AccessibilityEvent?) {
+        if (event == null) return
+
+        if (event.eventType == AccessibilityEvent.TYPE_NOTIFICATION_STATE_CHANGED || event.eventType == AccessibilityEvent.TYPE_VIEW_CLICKED) {
+            val eventText = event.text.joinToString(" ").lowercase()
+            val nodeText = event.source?.text?.toString()?.lowercase() ?: event.source?.contentDescription?.toString()?.lowercase() ?: ""
+            
+            if (eventText.contains("copied") || eventText.contains("copy") || nodeText.contains("copy")) {
+                if (settings.copyCollect && lastDetectedCode.isNotEmpty()) {
+                    triggerCollection(lastDetectedFilename, lastDetectedCode, isAuto = false, isCopy = true)
+                }
+            }
+        }
+
+        val rootNode = rootInActiveWindow ?: return
+        val allTextNodes = mutableListOf<String>()
+        extractAllText(rootNode, allTextNodes)
+
+        // Pass 1: Project Trees
+        for (text in allTextNodes) {
+            val textHash = text.hashCode()
+            if (!processedContent.contains(textHash) && (text.contains("├──") || text.contains("└──"))) {
+                processedContent.add(textHash)
+                handleCapture("project", "Project Scaffold", text)
+            }
+        }
+
+        // Pass 2: Code blocks
+        for (text in allTextNodes) {
+            val textHash = text.hashCode()
+            if (!processedContent.contains(textHash)) {
+                if ((text.contains("fun ") && text.contains("{")) || 
+                    (text.contains("class ") && text.contains("{")) || 
+                    text.startsWith("import ") || 
+                    text.contains("```") ||
+                    (text.contains("const ") && text.contains("="))) {
+                    
+                    processedContent.add(textHash)
+                    var filename = "snippet_${System.currentTimeMillis()}.txt"
+                    val match = Regex("(?:file|name)[\\s:]*([a-zA-Z0-9_\\-\\.\\/]+)", RegexOption.IGNORE_CASE).find(text.lines().firstOrNull() ?: "")
+                    if (match != null) filename = match.groupValues[1]
+                    
+                    lastDetectedFilename = filename
+                    lastDetectedCode = text
+                    handleCapture("code", filename, text)
+                }
+            }
+        }
+    }
+
+    // ENHANCED: Digs into text, contentDescription, hintText, and tooltipText
+    private fun extractAllText(node: AccessibilityNodeInfo?, output: MutableList<String>) {
+        if (node == null) return
+        
+        val t = node.text?.toString()
+        val c = node.contentDescription?.toString()
+        val tt = node.tooltipText?.toString()
+        
+        if (!t.isNullOrBlank()) output.add(t)
+        if (!c.isNullOrBlank() && c != t) output.add(c)
+        if (!tt.isNullOrBlank() && tt != t && tt != c) output.add(tt)
+        
+        for (i in 0 until node.childCount) extractAllText(node.getChild(i), output)
+    }
+
+    private fun handleCapture(type: String, name: String, content: String) {
+        if (type == "code") CodeCache.pendingSaves[name] = content
+        
+        if (settings.autoCollect) {
+            triggerCollection(name, content, isAuto = true, isCopy = false, type = type)
+        } else if (settings.notificationsEnabled) {
+            triggerInteractiveNotification(if (type == "project") "ACTION_SCAFFOLD_PROJECT" else "ACTION_COLLECT", 
+                if (type == "project") "TREE_CONTENT" else "FILENAME", name)
+        }
+    }
+
+    private fun triggerCollection(name: String, content: String, isAuto: Boolean, isCopy: Boolean, type: String = "code") {
+        val actionType = if (type == "project") "ACTION_SCAFFOLD_PROJECT" else "ACTION_COLLECT"
+        val extraKey = if (type == "project") "TREE_CONTENT" else "FILENAME"
+        
+        val intent = Intent(this, CodeActionReceiver::class.java).apply {
+            action = actionType
+            putExtra(extraKey, if (type == "project") content else name)
+        }
+        sendBroadcast(intent)
+        
+        if (settings.notificationsEnabled) {
+            showToastNotification(name, if (isCopy) "via Copy-Collect" else "Auto-Collected")
+        }
+    }
+
+    private fun triggerInteractiveNotification(action: String, extraKey: String, name: String) {
+        val manager = getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
+        manager.createNotificationChannel(NotificationChannel("deep_seek_alerts", "DeepSeek Alerts", NotificationManager.IMPORTANCE_HIGH))
+        val intent = Intent(this, CodeActionReceiver::class.java).apply { this.action = action; putExtra(extraKey, name) }
+        val pIntent = PendingIntent.getBroadcast(this, name.hashCode(), intent, PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE)
+
+        val notif = NotificationCompat.Builder(this, "deep_seek_alerts")
+            .setSmallIcon(android.R.drawable.ic_dialog_info)
+            .setContentTitle(if (action == "ACTION_COLLECT") "Code Detected" else "Project Detected")
+            .setContentText("Save $name?")
+            .addAction(android.R.drawable.ic_menu_save, "Collect", pIntent)
+            .setAutoCancel(true).build()
+        manager.notify(name.hashCode(), notif)
+    }
+
+    private fun showToastNotification(title: String, msg: String) {
+        val manager = getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
+        manager.createNotificationChannel(NotificationChannel("deep_seek_silent", "Auto Alerts", NotificationManager.IMPORTANCE_LOW))
+        val notif = NotificationCompat.Builder(this, "deep_seek_silent")
+            .setSmallIcon(android.R.drawable.ic_dialog_info).setContentTitle(title).setContentText(msg).setAutoCancel(true).build()
+        manager.notify(title.hashCode(), notif)
+    }
+    override fun onInterrupt() {}
+}
+EOF
+
+# 4. Update UI with First-Run App Verification
+cat << 'EOF' > "$PKG_DIR/MainActivity.kt"
 package com.example.deepseekcatcher
 
 import android.content.Context
@@ -211,7 +411,4 @@ fun SettingsCard(title: String, subtitle: String, isChecked: Boolean, onCheckedC
     Card(modifier = Modifier.fillMaxWidth().clip(RoundedCornerShape(16.dp)), colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface)) {
         Row(modifier = Modifier.padding(16.dp), verticalAlignment = Alignment.CenterVertically) {
             Column(modifier = Modifier.weight(1f)) { Text(title, fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.onSurface); Text(subtitle, style = MaterialTheme.typography.bodySmall, color = if(isChecked) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant) }
-            Switch(checked = isChecked, onCheckedChange = onCheckedChange, colors = SwitchDefaults.colors(checkedThumbColor = MaterialTheme.colorScheme.onPrimary, checkedTrackColor = MaterialTheme.colorScheme.primary))
-        }
-    }
-}
+            Switch(checked = isChecked, onCheckedChange = onCheckedChange, colors = SwitchDefaults.colors(checkedThumbColor = Material

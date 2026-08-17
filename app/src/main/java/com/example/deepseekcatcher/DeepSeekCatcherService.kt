@@ -21,7 +21,6 @@ class DeepSeekCatcherService : AccessibilityService() {
     override fun onAccessibilityEvent(event: AccessibilityEvent?) {
         if (event == null) return
 
-        // COPY-COLLECT: Detect "Copied" Toasts or "Copy" button clicks
         if (event.eventType == AccessibilityEvent.TYPE_NOTIFICATION_STATE_CHANGED || event.eventType == AccessibilityEvent.TYPE_VIEW_CLICKED) {
             val eventText = event.text.joinToString(" ").lowercase()
             val nodeText = event.source?.text?.toString()?.lowercase() ?: event.source?.contentDescription?.toString()?.lowercase() ?: ""
@@ -33,12 +32,11 @@ class DeepSeekCatcherService : AccessibilityService() {
             }
         }
 
-        // DEEP SCAN: Only process window content changes
         val rootNode = rootInActiveWindow ?: return
         val allTextNodes = mutableListOf<String>()
         extractAllText(rootNode, allTextNodes)
 
-        // PASS 1: Project Structures MUST be processed FIRST
+        // Pass 1: Project Trees
         for (text in allTextNodes) {
             val textHash = text.hashCode()
             if (!processedContent.contains(textHash) && (text.contains("├──") || text.contains("└──"))) {
@@ -47,7 +45,7 @@ class DeepSeekCatcherService : AccessibilityService() {
             }
         }
 
-        // PASS 2: Code snippets
+        // Pass 2: Code blocks
         for (text in allTextNodes) {
             val textHash = text.hashCode()
             if (!processedContent.contains(textHash)) {
@@ -70,14 +68,17 @@ class DeepSeekCatcherService : AccessibilityService() {
         }
     }
 
+    // ENHANCED: Digs into text, contentDescription, hintText, and tooltipText
     private fun extractAllText(node: AccessibilityNodeInfo?, output: MutableList<String>) {
         if (node == null) return
-        // Some apps hide text in content descriptions, we must check both
+        
         val t = node.text?.toString()
         val c = node.contentDescription?.toString()
+        val tt = node.tooltipText?.toString()
         
         if (!t.isNullOrBlank()) output.add(t)
-        else if (!c.isNullOrBlank()) output.add(c)
+        if (!c.isNullOrBlank() && c != t) output.add(c)
+        if (!tt.isNullOrBlank() && tt != t && tt != c) output.add(tt)
         
         for (i in 0 until node.childCount) extractAllText(node.getChild(i), output)
     }
@@ -99,13 +100,12 @@ class DeepSeekCatcherService : AccessibilityService() {
         
         val intent = Intent(this, CodeActionReceiver::class.java).apply {
             action = actionType
-            putExtra(extraKey, if (type == "project") content else name) // Pass actual tree content for scaffold
+            putExtra(extraKey, if (type == "project") content else name)
         }
         sendBroadcast(intent)
         
         if (settings.notificationsEnabled) {
-            val source = if (isCopy) "via Copy-Collect" else "Auto-Collected"
-            showToastNotification(name, source)
+            showToastNotification(name, if (isCopy) "via Copy-Collect" else "Auto-Collected")
         }
     }
 
