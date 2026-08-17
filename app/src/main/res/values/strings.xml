@@ -1,4 +1,4 @@
 <resources>
-    <string name="app_name">DeepSeek Workspace</string>
-    <string name="accessibility_description">Monitors DeepSeek screen output for code snippets and project trees.</string>
+    <string name="app_name">DeepSeek Collector</string>
+    <string name="accessibility_description">Monitors DeepSeek screen output and manages collected code.</string>
 </resources>
