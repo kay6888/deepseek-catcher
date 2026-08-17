@@ -3,6 +3,7 @@ package com.example.deepseekcatcher
 import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageManager
+import android.net.Uri
 import android.os.Bundle
 import android.os.Environment
 import android.provider.Settings
@@ -35,11 +36,16 @@ val DarkSeaColors = darkColorScheme(primary = GlowingCyan, onPrimary = AbyssalBl
 val LightSeaColors = lightColorScheme(primary = Color(0xFF005B94), onPrimary = Color.White, secondary = NeonCoral, background = Color(0xFFF0F4F8), surface = Color.White, onSurface = Color(0xFF0A192F), surfaceVariant = Color(0xFFE2E8F0), onSurfaceVariant = Color(0xFF475569))
 
 class MainActivity : ComponentActivity() {
+    private var initialScreen = Screen.FileManager
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         val settingsManager = SettingsManager(this)
         
-        // APP LOCATOR: With QUERY_ALL_PACKAGES, this will finally work.
+        if (intent?.getStringExtra("NAVIGATE_TO") == "SETTINGS") {
+            initialScreen = Screen.Settings
+        }
+
         val installedPackages = packageManager.getInstalledPackages(PackageManager.GET_META_DATA)
         val deepSeekApp = installedPackages.find { it.packageName.contains("deepseek", true) }
         val dsPackageName = deepSeekApp?.packageName
@@ -48,9 +54,16 @@ class MainActivity : ComponentActivity() {
             var isDark by remember { mutableStateOf(settingsManager.isDarkMode) }
             MaterialTheme(colorScheme = if (isDark) DarkSeaColors else LightSeaColors) {
                 Surface(modifier = Modifier.fillMaxSize(), color = MaterialTheme.colorScheme.background) {
-                    DeepSeekApp(settingsManager, dsPackageName, this) { isDark = it }
+                    DeepSeekApp(settingsManager, dsPackageName, this, initialScreen) { isDark = it }
                 }
             }
+        }
+    }
+
+    override fun onNewIntent(intent: Intent?) {
+        super.onNewIntent(intent)
+        if (intent?.getStringExtra("NAVIGATE_TO") == "SETTINGS") {
+            recreate()
         }
     }
 }
@@ -59,8 +72,8 @@ enum class Screen { FileManager, Editor, Settings }
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-fun DeepSeekApp(settings: SettingsManager, dsPackageName: String?, context: Context, onThemeChange: (Boolean) -> Unit) {
-    var currentScreen by remember { mutableStateOf(Screen.FileManager) }
+fun DeepSeekApp(settings: SettingsManager, dsPackageName: String?, context: Context, startScreen: Screen, onThemeChange: (Boolean) -> Unit) {
+    var currentScreen by remember { mutableStateOf(startScreen) }
     var currentFile by remember { mutableStateOf<File?>(null) }
     
     val baseDir = File(Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS), "DeepSeekWorkspace")
@@ -71,7 +84,6 @@ fun DeepSeekApp(settings: SettingsManager, dsPackageName: String?, context: Cont
     var fileToEdit by remember { mutableStateOf<File?>(null) }
     var fileToDelete by remember { mutableStateOf<File?>(null) }
 
-    // Check if accessibility service is actually running
     var isServiceRunning by remember { mutableStateOf(false) }
     LaunchedEffect(Unit) {
         val am = context.getSystemService(Context.ACCESSIBILITY_SERVICE) as android.view.accessibility.AccessibilityManager
@@ -105,7 +117,6 @@ fun DeepSeekApp(settings: SettingsManager, dsPackageName: String?, context: Cont
             when (currentScreen) {
                 Screen.FileManager -> {
                     Column {
-                        // DIAGNOSTICS DASHBOARD
                         if (dsPackageName != null) {
                             Card(modifier = Modifier.fillMaxWidth().padding(16.dp), colors = CardDefaults.cardColors(containerColor = Color(0xFF004D40))) {
                                 Column(modifier = Modifier.padding(16.dp)) {
@@ -115,7 +126,7 @@ fun DeepSeekApp(settings: SettingsManager, dsPackageName: String?, context: Cont
                             }
                         } else {
                             Card(modifier = Modifier.fillMaxWidth().padding(16.dp), colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.secondary)) {
-                                Text("⚠️ Target App Missing! Could not locate DeepSeek on this device. Install the official app for the collector to function.", modifier = Modifier.padding(16.dp), color = Color.White, fontWeight = FontWeight.Bold)
+                                Text("⚠️ Target App Missing! Install official DeepSeek for auto-collection.", modifier = Modifier.padding(16.dp), color = Color.White, fontWeight = FontWeight.Bold)
                             }
                         }
 
@@ -130,11 +141,10 @@ fun DeepSeekApp(settings: SettingsManager, dsPackageName: String?, context: Cont
                     }
                 }
                 Screen.Editor -> currentFile?.let { EditorScreen(it) { currentScreen = Screen.FileManager } }
-                Screen.Settings -> SettingsScreen(settings, onThemeChange)
+                Screen.Settings -> SettingsScreen(settings, context, onThemeChange)
             }
         }
 
-        // DIALOGS
         if (showCreateDialog) {
             var newName by remember { mutableStateOf("") }
             AlertDialog(onDismissRequest = { showCreateDialog = false }, title = { Text("Create New Project / Folder") }, text = { OutlinedTextField(value = newName, onValueChange = { newName = it }, singleLine = true) }, confirmButton = { Button(onClick = { File(currentDir, newName).mkdirs(); showCreateDialog = false }) { Text("Create") } }, dismissButton = { TextButton(onClick = { showCreateDialog = false }) { Text("Cancel") } })
@@ -183,9 +193,10 @@ fun EditorScreen(file: File, onSave: () -> Unit) {
 }
 
 @Composable
-fun SettingsScreen(settings: SettingsManager, onThemeChange: (Boolean) -> Unit) {
+fun SettingsScreen(settings: SettingsManager, context: Context, onThemeChange: (Boolean) -> Unit) {
     var autoCollect by remember { mutableStateOf(settings.autoCollect) }
     var copyCollect by remember { mutableStateOf(settings.copyCollect) }
+    var floatingBtn by remember { mutableStateOf(settings.floatingButtonEnabled) }
     var notifs by remember { mutableStateOf(settings.notificationsEnabled) }
     var isDark by remember { mutableStateOf(settings.isDarkMode) }
 
@@ -198,7 +209,17 @@ fun SettingsScreen(settings: SettingsManager, onThemeChange: (Boolean) -> Unit) 
             
             Divider(modifier = Modifier.padding(vertical = 24.dp), color = MaterialTheme.colorScheme.surfaceVariant)
             
-            Text("System Preferences", style = MaterialTheme.typography.titleMedium, color = MaterialTheme.colorScheme.secondary, modifier = Modifier.padding(bottom = 16.dp))
+            Text("Interface Controls", style = MaterialTheme.typography.titleMedium, color = MaterialTheme.colorScheme.secondary, modifier = Modifier.padding(bottom = 16.dp))
+            SettingsCard("Floating Swap Button", "Overlay button with Swap, Refresh, and Settings menu.", floatingBtn) { enabled ->
+                floatingBtn = enabled
+                settings.floatingButtonEnabled = enabled
+                if (enabled && !Settings.canDrawOverlays(context)) {
+                    val intent = Intent(Settings.ACTION_MANAGE_OVERLAY_PERMISSION, Uri.parse("package:${context.packageName}"))
+                    context.startActivity(intent)
+                }
+            }
+            
+            Spacer(modifier = Modifier.height(12.dp))
             SettingsCard("Heads-up Displays", if(notifs) "Notifications: ON" else "Notifications: OFF (Silent Mode)", notifs) { notifs = it; settings.notificationsEnabled = it }
             Spacer(modifier = Modifier.height(12.dp))
             SettingsCard("Abyssal Theme", "Engage Bioluminescent Dark Mode.", isDark) { isDark = it; settings.isDarkMode = it; onThemeChange(it) }
